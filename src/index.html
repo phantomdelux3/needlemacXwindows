@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>NeedleX</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="island" data-view="hidden">
+    <div class="ear left"></div>
+    <div class="ear right"></div>
+    <div class="glow"></div>
+    <div class="shell">
+      <!-- liquid glass: refracted snapshot of the desktop behind the island -->
+      <div class="glass"><div class="glass-src"><img class="snap" alt="" /></div></div>
+      <div class="tint"><img class="tint-art" alt="" /></div>
+      <div class="glass-shade"></div>
+
+      <!-- idle: nothing playing -->
+      <div class="layer l-idle">
+        <span class="idle-dot"></span>
+        <span class="idle-text">Nothing playing</span>
+        <span class="idle-clock"></span>
+      </div>
+
+      <!-- compact: always-on pill -->
+      <div class="layer l-compact">
+        <img class="c-art art-img" alt="" />
+        <div class="c-text"><span class="c-title"></span><span class="c-sep">·</span><span class="c-artist"></span></div>
+        <div class="bars c-bars"><i></i><i></i><i></i><i></i><i></i></div>
+      </div>
+
+      <!-- peek: shown briefly when the song changes -->
+      <div class="layer l-peek">
+        <img class="p-art art-img" alt="" />
+        <div class="p-meta">
+          <div class="p-label">Now playing</div>
+          <div class="p-title"></div>
+          <div class="p-artist"></div>
+        </div>
+        <div class="bars p-bars"><i></i><i></i><i></i><i></i><i></i></div>
+      </div>
+
+      <!-- expanded player -->
+      <div class="layer l-full">
+        <div class="f-top">
+          <div class="f-art-wrap">
+            <img class="f-art art-img" alt="" />
+          </div>
+          <div class="f-meta">
+            <div class="f-title marquee"><span></span></div>
+            <div class="f-artist"></div>
+            <div class="f-source"><span class="src-dot"></span><span class="src-name"></span></div>
+          </div>
+          <div class="bars f-bars"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+        </div>
+
+        <div class="f-progress">
+          <span class="t-cur">0:00</span>
+          <div class="scrub"><div class="scrub-track"><div class="scrub-fill"></div></div><div class="scrub-knob"></div></div>
+          <span class="t-dur">0:00</span>
+        </div>
+
+        <div class="f-controls">
+          <button class="btn small" data-act="lyrics" title="Lyrics">
+            <svg viewBox="0 0 24 24"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v8a2.5 2.5 0 0 1-2.5 2.5H10l-4.2 3.6c-.5.4-1.3 0-1.3-.6V16A2.5 2.5 0 0 1 4 13.5z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M8 8h8M8 11.5h5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          </button>
+          <div class="transport">
+            <button class="btn" data-act="prev" title="Previous">
+              <svg viewBox="0 0 24 24"><path d="M11.5 12 20 6.2v11.6zM3 12l8.5-5.8v11.6z" fill="currentColor"/></svg>
+            </button>
+            <button class="btn big" data-act="toggle" title="Play / Pause">
+              <svg class="i-play" viewBox="0 0 24 24"><path d="M7 4.8v14.4c0 .8.9 1.3 1.6.8l11-7.2a1 1 0 0 0 0-1.6l-11-7.2C7.9 3.5 7 4 7 4.8z" fill="currentColor"/></svg>
+              <svg class="i-pause" viewBox="0 0 24 24"><rect x="5.5" y="4" width="4.6" height="16" rx="1.4" fill="currentColor"/><rect x="13.9" y="4" width="4.6" height="16" rx="1.4" fill="currentColor"/></svg>
+            </button>
+            <button class="btn" data-act="next" title="Next">
+              <svg viewBox="0 0 24 24"><path d="M12.5 12 4 17.8V6.2zM21 12l-8.5 5.8V6.2z" fill="currentColor"/></svg>
+            </button>
+          </div>
+          <button class="btn small" data-act="hide" title="Hide notch (bring it back from the tray icon)">
+            <svg viewBox="0 0 24 24"><path d="M3 4.5 21 19.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M6.3 7.2C4.4 8.5 3 10.3 2.5 12c1.3 4 5.2 6.5 9.5 6.5 1.7 0 3.3-.4 4.7-1.1M10 5.7c.6-.1 1.3-.2 2-.2 4.3 0 8.2 2.5 9.5 6.5-.4 1.3-1.1 2.5-2 3.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M9.6 10.2a3 3 0 0 0 4.2 4.2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          </button>
+        </div>
+
+        <div class="f-lyrics">
+          <div class="lyr-status"></div>
+          <div class="lyr-inner"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="center-guide"></div>
+  <div id="live"><div class="live-pill"><span class="live-a"></span><span class="live-b"></span></div></div>
+
+  <script src="glass.js"></script>
+  <script src="main.js"></script>
+</body>
+</html>
