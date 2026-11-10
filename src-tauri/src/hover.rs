@@ -55,13 +55,15 @@ pub fn spawn(app: AppHandle) {
 
             let state = app.state::<AppState>();
             let dirty = state.geo_dirty.swap(false, std::sync::atomic::Ordering::Relaxed);
-            if dirty || geo.is_none() || geo_at.elapsed() > Duration::from_millis(1500) {
+            if dirty || geo.is_none() || geo_at.elapsed() > Duration::from_millis(700) {
                 if let (Ok(p), Ok(s)) = (win.outer_position(), win.scale_factor()) {
                     geo = Some((p.x as f64, p.y as f64, s));
                     geo_at = Instant::now();
                 }
             }
-            let Some((wx, wy, scale)) = geo else { continue };
+            let Some((wx, wy, dpi)) = geo else { continue };
+            // UI coordinates are CSS px of a page that may be zoomed down to fit the screen
+            let scale = dpi * *state.zoom.lock().unwrap();
             let r = *state.hit.lock().unwrap();
 
             let mut pt = POINT::default();

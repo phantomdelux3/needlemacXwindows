@@ -55,7 +55,7 @@ window.FlowBG = (() => {
   }
 
   vec3 wordsBG(vec2 uv, vec2 s, float aspect, float sharp, float stripe){
-    float sz = 1.3;                                    // cover height in screen heights
+    float sz = max(1.3, aspect * 0.66);                // cover size in screen heights (wider on ultrawide)
     vec2 a = (s - vec2(0.16 * aspect, 0.03)) / sz + 0.5;
     a = flow(a, 0.01 + uLevel * 0.018);
     a = pixelate(a);
@@ -64,7 +64,9 @@ window.FlowBG = (() => {
     float outside = length(a - ac);
     float df = length((s - vec2(0.13 * aspect, 0.02)) / vec2(0.42 * aspect, 0.55));
     float lod = smoothstep(0.38, 1.12, df) * 7.0;
-    if (outside > 0.0) lod = max(lod, 5.0 + outside * 12.0);
+    float edgeIn = min(min(a.x, 1.0 - a.x), min(a.y, 1.0 - a.y));          // distance to the cover edge
+    lod = max(lod, 6.5 * smoothstep(0.16, 0.0, edgeIn));                    // dissolve toward the edge
+    if (outside > 0.0) lod = max(lod, min(7.5, 6.5 + outside * 20.0));     // and stay dissolved past it
     lod = mix(min(lod, 7.5), 0.4, sharp);
     vec3 c = blurTex(ac, lod);
     float l = dot(c, vec3(0.299, 0.587, 0.114));

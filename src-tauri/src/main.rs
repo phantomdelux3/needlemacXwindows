@@ -2,30 +2,27 @@
 
 mod art;
 mod audio;
+mod display;
 mod hover;
 mod idle;
 mod lyrics;
 mod media;
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{self, Sender};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
-use tauri::menu::{CheckMenuItem, CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+use tauri::menu::{CheckMenuItem, CheckMenuItemBuilder, Menu, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use tauri::tray::TrayIconBuilder;
-use tauri::{
-    AppHandle, Emitter, Manager, PhysicalPosition, State, WebviewUrl, WebviewWindowBuilder, Wry,
-};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, Wry};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 
 use media::MediaCmd;
 
 /// Auto full-screen choices offered in the tray (minutes, 0 = off).
 const IDLE_CHOICES: [u32; 6] = [0, 1, 3, 5, 10, 15];
-/// Within this many px of the middle the notch snaps back to the centre.
-const MAGNET_PX: f64 = 46.0;
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase", default)]
@@ -40,6 +37,8 @@ pub struct Settings {
     pub notch_hidden: bool,
     /// Horizontal offset of the notch from the screen centre, logical px.
     pub notch_offset: f64,
+    /// Monitor (system name) the notch lives on; empty = main display.
+    pub monitor: String,
 }
 
 impl Default for Settings {
@@ -52,6 +51,7 @@ impl Default for Settings {
             auto_full_minutes: 3,
             notch_hidden: false,
             notch_offset: 0.0,
+            monitor: String::new(),
         }
     }
 }
@@ -61,6 +61,8 @@ pub struct AppState {
     pub hit: Mutex<hover::Rect>,
     pub lyrics_cache: Mutex<HashMap<String, lyrics::LyricsResult>>,
     pub art_cache: Mutex<HashMap<String, Option<String>>>,
+    /// one cover lookup at a time (both windows ask for the same song)
+    pub art_lock: tokio::sync::Mutex<()>,
     pub http: reqwest::Client,
     pub settings: Mutex<Settings>,
     /// Something is playing right now (set by the media watcher).
@@ -69,6 +71,10 @@ pub struct AppState {
     pub geo_dirty: AtomicBool,
     /// The notch is being dragged – keep the window interactive.
     pub dragging: AtomicBool,
+    /// Zoom applied to the island so it fits small / heavily-scaled screens.
+    pub zoom: Mutex<f64>,
+    /// System names of the monitors listed in the tray, in menu order.
+    pub monitors: Mutex<Vec<String>>,
     pub tray_items: Mutex<HashMap<String, CheckMenuItem<Wry>>>,
 }
 
@@ -90,6 +96,17 @@ fn save_settings(app: &AppHandle, s: &Settings) {
         }
         let _ = std::fs::write(p, serde_json::to_string_pretty(s).unwrap_or_default());
     }
+}
+
+pub fn update_setting(app: &AppHandle, f: impl FnOnce(&mut Settings)) {
+    let state = app.state::<AppState>();
+    let s = {
+        let mut s = state.settings.lock().unwrap();
+        f(&mut s);
+        s.clone()
+    };
+    save_settings(app, &s);
+    let _ = app.emit("settings", s);
 }
 
 // ---------- commands ----------
@@ -147,30 +164,19 @@ fn set_notch_hidden(app: AppHandle, hidden: bool) {
     apply_notch_hidden(&app, hidden);
 }
 
-/// Drag the notch sideways. `offset` is logical px from the screen centre.
-/// Returns the applied offset (0 when the centre magnet caught it).
+/// Start dragging the notch sideways (tracked natively until the button is released).
 #[tauri::command]
-fn move_notch(app: AppHandle, state: State<AppState>, offset: f64, done: bool) -> f64 {
-    let applied = place_island(&app, offset);
-    if done {
-        state.dragging.store(false, Ordering::Relaxed);
-        update_setting(&app, |s| s.notch_offset = applied);
-    } else {
-        state.dragging.store(true, Ordering::Relaxed);
-    }
-    applied
+fn drag_notch_start(app: AppHandle) {
+    display::drag(app);
 }
 
-// ---------- window / tray ----------
+// ---------- windows ----------
 
-/// Opens the full-screen view on the island's monitor. `auto` = idle timer.
+/// Opens the full-screen view on the notch's monitor. `auto` = idle timer.
 pub fn show_full(app: &AppHandle, auto: bool) {
     let Some(full) = app.get_webview_window("full") else { return };
+    display::fit_full(app);
     if let Some(main) = app.get_webview_window("main") {
-        if let Ok(Some(m)) = main.current_monitor() {
-            let _ = full.set_position(*m.position());
-            let _ = full.set_size(*m.size());
-        }
         let _ = main.hide();
     }
     let _ = full.show();
@@ -197,165 +203,6 @@ fn apply_notch_hidden(app: &AppHandle, hidden: bool) {
     }
 }
 
-/// Positions the island window at `offset` logical px from the top-centre of
-/// its monitor, with a magnet at the middle. Returns the applied offset.
-fn place_island(app: &AppHandle, offset: f64) -> f64 {
-    let Some(win) = app.get_webview_window("main") else { return 0.0 };
-    let mon = win
-        .current_monitor()
-        .ok()
-        .flatten()
-        .or_else(|| win.primary_monitor().ok().flatten());
-    let Some(mon) = mon else { return 0.0 };
-    let Ok(ws) = win.outer_size() else { return 0.0 };
-    let scale = mon.scale_factor();
-    let (mp, ms) = (mon.position(), mon.size());
-    let max = ((ms.width as f64 - ws.width as f64) / 2.0 / scale).max(0.0);
-    let mut off = offset.clamp(-max, max);
-    if off.abs() < MAGNET_PX {
-        off = 0.0;
-    }
-    let x = mp.x as f64 + (ms.width as f64 - ws.width as f64) / 2.0 + off * scale;
-    let _ = win.set_position(PhysicalPosition::new(x.round() as i32, mp.y));
-    app.state::<AppState>().geo_dirty.store(true, Ordering::Relaxed);
-    off
-}
-
-fn position_window(app: &AppHandle) {
-    let off = app.state::<AppState>().settings.lock().unwrap().notch_offset;
-    place_island(app, off);
-}
-
-fn update_setting(app: &AppHandle, f: impl FnOnce(&mut Settings)) {
-    let state = app.state::<AppState>();
-    let s = {
-        let mut s = state.settings.lock().unwrap();
-        f(&mut s);
-        s.clone()
-    };
-    save_settings(app, &s);
-    let _ = app.emit("settings", s);
-}
-
-fn idle_label(m: u32) -> String {
-    match m {
-        0 => "Off".into(),
-        1 => "After 1 minute".into(),
-        m => format!("After {m} minutes"),
-    }
-}
-
-fn build_tray(app: &AppHandle, s: &Settings) -> tauri::Result<()> {
-    let autostart_on = app.autolaunch().is_enabled().unwrap_or(false);
-    let check = |id: &str, label: &str, on: bool| CheckMenuItemBuilder::with_id(id, label).checked(on).build(app);
-
-    let hide_notch = check("hide_notch", "Hide notch", s.notch_hidden)?;
-    let floating = check("floating", "Floating island (pill shape)", s.floating)?;
-    let live = check("live", "Live lyrics under the island", s.live_lyrics)?;
-    let hide = check("hide", "Hide when nothing is playing", s.hide_idle)?;
-    let glow = check("glow", "Beat glow", s.glow)?;
-    let auto = check("autostart", "Launch at startup", autostart_on)?;
-
-    let mut idle_items = Vec::new();
-    let mut idle_menu = SubmenuBuilder::new(app, "Full screen when idle");
-    for m in IDLE_CHOICES {
-        let it = check(&format!("idle_{m}"), &idle_label(m), s.auto_full_minutes == m)?;
-        idle_menu = idle_menu.item(&it);
-        idle_items.push(it);
-    }
-    let idle_menu = idle_menu.build()?;
-
-    let open_full_item = MenuItemBuilder::with_id("open_full", "Open full screen").build(app)?;
-    let recenter = MenuItemBuilder::with_id("recenter", "Re-center notch").build(app)?;
-    let quit = MenuItemBuilder::with_id("quit", "Quit NeedleX").build(app)?;
-
-    let menu = MenuBuilder::new(app)
-        .items(&[&hide_notch, &recenter, &open_full_item])
-        .separator()
-        .item(&idle_menu)
-        .separator()
-        .items(&[&floating, &live, &hide, &glow])
-        .separator()
-        .item(&auto)
-        .separator()
-        .item(&quit)
-        .build()?;
-
-    {
-        let state = app.state::<AppState>();
-        let mut map = state.tray_items.lock().unwrap();
-        for it in [&hide_notch, &floating, &live, &hide, &glow, &auto] {
-            map.insert(it.id().as_ref().to_string(), it.clone());
-        }
-        for it in &idle_items {
-            map.insert(it.id().as_ref().to_string(), it.clone());
-        }
-    }
-
-    TrayIconBuilder::with_id("tray")
-        .icon(app.default_window_icon().cloned().expect("icon"))
-        .tooltip("NeedleX")
-        .menu(&menu)
-        .show_menu_on_left_click(true)
-        .on_menu_event(move |app, ev| {
-            let id = ev.id().as_ref().to_string();
-            let state = app.state::<AppState>();
-            let item = state.tray_items.lock().unwrap().get(&id).cloned();
-            match id.as_str() {
-                "quit" => app.exit(0),
-                "open_full" => show_full(app, false),
-                "recenter" => {
-                    place_island(app, 0.0);
-                    update_setting(app, |s| s.notch_offset = 0.0);
-                    if state.settings.lock().unwrap().notch_hidden {
-                        apply_notch_hidden(app, false);
-                    }
-                }
-                "hide_notch" => {
-                    let hidden = !state.settings.lock().unwrap().notch_hidden;
-                    apply_notch_hidden(app, hidden);
-                }
-                "autostart" => {
-                    let al = app.autolaunch();
-                    let on = !al.is_enabled().unwrap_or(false);
-                    let _ = if on { al.enable() } else { al.disable() };
-                    if let Some(i) = item {
-                        let _ = i.set_checked(al.is_enabled().unwrap_or(on));
-                    }
-                }
-                "floating" | "live" | "hide" | "glow" => {
-                    let mut new_val = false;
-                    update_setting(app, |s| {
-                        let field = match id.as_str() {
-                            "floating" => &mut s.floating,
-                            "live" => &mut s.live_lyrics,
-                            "hide" => &mut s.hide_idle,
-                            _ => &mut s.glow,
-                        };
-                        *field = !*field;
-                        new_val = *field;
-                    });
-                    if let Some(i) = item {
-                        let _ = i.set_checked(new_val);
-                    }
-                }
-                other if other.starts_with("idle_") => {
-                    let m: u32 = other[5..].parse().unwrap_or(0);
-                    update_setting(app, |s| s.auto_full_minutes = m);
-                    let items = state.tray_items.lock().unwrap();
-                    for c in IDLE_CHOICES {
-                        if let Some(i) = items.get(&format!("idle_{c}")) {
-                            let _ = i.set_checked(c == m);
-                        }
-                    }
-                }
-                _ => {}
-            }
-        })
-        .build(app)?;
-    Ok(())
-}
-
 fn create_full_window(app: &AppHandle) -> tauri::Result<()> {
     WebviewWindowBuilder::new(app, "full", WebviewUrl::App("full.html".into()))
         .title("NeedleX Now Playing")
@@ -372,6 +219,177 @@ fn create_full_window(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+// ---------- tray ----------
+
+fn idle_label(m: u32) -> String {
+    match m {
+        0 => "Off".into(),
+        1 => "After 1 minute".into(),
+        m => format!("After {m} minutes"),
+    }
+}
+
+/// Builds the tray menu from the current settings and display setup.
+fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
+    let s = app.state::<AppState>().settings.lock().unwrap().clone();
+    let autostart_on = app.autolaunch().is_enabled().unwrap_or(false);
+    let check = |id: &str, label: &str, on: bool| CheckMenuItemBuilder::with_id(id, label).checked(on).build(app);
+
+    let hide_notch = check("hide_notch", "Hide notch", s.notch_hidden)?;
+    let floating = check("floating", "Floating island (pill shape)", s.floating)?;
+    let live = check("live", "Live lyrics under the island", s.live_lyrics)?;
+    let hide = check("hide", "Hide when nothing is playing", s.hide_idle)?;
+    let glow = check("glow", "Beat glow", s.glow)?;
+    let auto = check("autostart", "Launch at startup", autostart_on)?;
+
+    let mut items: Vec<CheckMenuItem<Wry>> = vec![
+        hide_notch.clone(), floating.clone(), live.clone(), hide.clone(), glow.clone(), auto.clone(),
+    ];
+
+    let mut idle_menu = SubmenuBuilder::new(app, "Full screen when idle");
+    for m in IDLE_CHOICES {
+        let it = check(&format!("idle_{m}"), &idle_label(m), s.auto_full_minutes == m)?;
+        idle_menu = idle_menu.item(&it);
+        items.push(it);
+    }
+    let idle_menu = idle_menu.build()?;
+
+    // which display the notch lives on
+    let mons = display::monitors(app);
+    let prim = app.primary_monitor().ok().flatten().and_then(|m| m.name().cloned()).unwrap_or_default();
+    let names: Vec<String> = mons.iter().map(|m| m.name().cloned().unwrap_or_default()).collect();
+    let chosen_exists = names.iter().any(|n| *n == s.monitor);
+    let mut disp_menu = SubmenuBuilder::new(app, "Show notch on");
+    let main_item = check("mon_main", "Main display", s.monitor.is_empty() || !chosen_exists)?;
+    disp_menu = disp_menu.item(&main_item).separator();
+    items.push(main_item);
+    for (i, m) in mons.iter().enumerate() {
+        let name = &names[i];
+        let it = check(&format!("mon_{i}"), &display::monitor_label(i, m, *name == prim), chosen_exists && *name == s.monitor)?;
+        disp_menu = disp_menu.item(&it);
+        items.push(it);
+    }
+    let disp_menu = disp_menu.build()?;
+
+    let open_full_item = MenuItemBuilder::with_id("open_full", "Open full screen").build(app)?;
+    let recenter = MenuItemBuilder::with_id("recenter", "Re-center notch").build(app)?;
+    let quit = MenuItemBuilder::with_id("quit", "Quit NeedleX").build(app)?;
+
+    let menu = MenuBuilder::new(app)
+        .items(&[&hide_notch, &recenter, &open_full_item])
+        .item(&disp_menu)
+        .separator()
+        .item(&idle_menu)
+        .separator()
+        .items(&[&floating, &live, &hide, &glow])
+        .separator()
+        .item(&auto)
+        .separator()
+        .item(&quit)
+        .build()?;
+
+    let state = app.state::<AppState>();
+    *state.monitors.lock().unwrap() = names;
+    let mut map = state.tray_items.lock().unwrap();
+    map.clear();
+    for it in items {
+        map.insert(it.id().as_ref().to_string(), it);
+    }
+    Ok(menu)
+}
+
+/// Rebuilds the tray menu (e.g. after monitors were plugged in / removed).
+pub fn rebuild_menu(app: &AppHandle) {
+    if let (Some(tray), Ok(menu)) = (app.tray_by_id("tray"), build_menu(app)) {
+        let _ = tray.set_menu(Some(menu));
+    }
+}
+
+fn on_menu(app: &AppHandle, id: &str) {
+    let state = app.state::<AppState>();
+    let item = state.tray_items.lock().unwrap().get(id).cloned();
+    match id {
+        "quit" => app.exit(0),
+        "open_full" => show_full(app, false),
+        "recenter" => {
+            update_setting(app, |s| s.notch_offset = 0.0);
+            display::place_island(app, 0.0);
+            if state.settings.lock().unwrap().notch_hidden {
+                apply_notch_hidden(app, false);
+            }
+        }
+        "hide_notch" => {
+            let hidden = !state.settings.lock().unwrap().notch_hidden;
+            apply_notch_hidden(app, hidden);
+        }
+        "autostart" => {
+            let al = app.autolaunch();
+            let on = !al.is_enabled().unwrap_or(false);
+            let _ = if on { al.enable() } else { al.disable() };
+            if let Some(i) = item {
+                let _ = i.set_checked(al.is_enabled().unwrap_or(on));
+            }
+        }
+        "floating" | "live" | "hide" | "glow" => {
+            let mut new_val = false;
+            update_setting(app, |s| {
+                let field = match id {
+                    "floating" => &mut s.floating,
+                    "live" => &mut s.live_lyrics,
+                    "hide" => &mut s.hide_idle,
+                    _ => &mut s.glow,
+                };
+                *field = !*field;
+                new_val = *field;
+            });
+            if let Some(i) = item {
+                let _ = i.set_checked(new_val);
+            }
+        }
+        other if other.starts_with("idle_") => {
+            let m: u32 = other[5..].parse().unwrap_or(0);
+            update_setting(app, |s| s.auto_full_minutes = m);
+            let items = state.tray_items.lock().unwrap();
+            for c in IDLE_CHOICES {
+                if let Some(i) = items.get(&format!("idle_{c}")) {
+                    let _ = i.set_checked(c == m);
+                }
+            }
+        }
+        other if other.starts_with("mon_") => {
+            let name = if other == "mon_main" {
+                String::new()
+            } else {
+                let i: usize = other[4..].parse().unwrap_or(usize::MAX);
+                state.monitors.lock().unwrap().get(i).cloned().unwrap_or_default()
+            };
+            // a new screen starts centred
+            update_setting(app, |s| {
+                s.monitor = name;
+                s.notch_offset = 0.0;
+            });
+            let a = app.clone();
+            std::thread::spawn(move || {
+                display::relayout(&a);
+                rebuild_menu(&a);
+            });
+        }
+        _ => {}
+    }
+}
+
+fn build_tray(app: &AppHandle) -> tauri::Result<()> {
+    let menu = build_menu(app)?;
+    TrayIconBuilder::with_id("tray")
+        .icon(app.default_window_icon().cloned().expect("icon"))
+        .tooltip("NeedleX")
+        .menu(&menu)
+        .show_menu_on_left_click(true)
+        .on_menu_event(|app, ev| on_menu(app, ev.id().as_ref()))
+        .build(app)?;
+    Ok(())
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
@@ -384,7 +402,7 @@ fn main() {
             open_full,
             close_full,
             set_notch_hidden,
-            move_notch,
+            drag_notch_start,
             lyrics::fetch_lyrics,
             art::hires_art,
             art::capture_backdrop
@@ -398,21 +416,24 @@ fn main() {
                 hit: Mutex::new(hover::Rect::default()),
                 lyrics_cache: Mutex::new(HashMap::new()),
                 art_cache: Mutex::new(HashMap::new()),
+                art_lock: tokio::sync::Mutex::new(()),
                 http: lyrics::client(),
                 settings: Mutex::new(settings.clone()),
                 playing: AtomicBool::new(false),
                 geo_dirty: AtomicBool::new(true),
                 dragging: AtomicBool::new(false),
+                zoom: Mutex::new(1.0),
+                monitors: Mutex::new(Vec::new()),
                 tray_items: Mutex::new(HashMap::new()),
             });
-            position_window(&handle);
             if settings.notch_hidden {
                 if let Some(main) = handle.get_webview_window("main") {
                     let _ = main.hide();
                 }
             }
             create_full_window(&handle)?;
-            build_tray(&handle, &settings)?;
+            build_tray(&handle)?;
+            display::spawn(handle.clone()); // first layout + watches display changes
             media::spawn(handle.clone(), rx);
             hover::spawn(handle.clone());
             audio::spawn(handle.clone());

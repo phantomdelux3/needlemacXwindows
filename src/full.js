@@ -179,7 +179,7 @@ function applyPalette(img) {
 // ------------------------------------------------------------ art drawing
 
 function drawCrop(ctx, img, W, H, smooth = true) {
-  const iw = img.naturalWidth, ih = img.naturalHeight;
+  const iw = img.naturalWidth || img.width, ih = img.naturalHeight || img.height;
   const s = Math.min(iw, ih);
   ctx.imageSmoothingEnabled = smooth;
   ctx.imageSmoothingQuality = 'high';
@@ -238,22 +238,63 @@ const zoomImgs = [];
   }
 })();
 
+// When only a small cover exists (players hand Windows ~300 px thumbnails and
+// some songs are in no catalogue), upscale it in 2x high-quality steps and
+// apply a light unsharp mask, so it stays crisp on big / high-DPI screens.
+function enhanced(img) {
+  const iw = img.naturalWidth, ih = img.naturalHeight;
+  const s = Math.min(iw, ih);
+  const dpr = window.devicePixelRatio || 1;
+  const screenPx = Math.max(screen.width, screen.height) * dpr;
+  const target = Math.round(Math.min(2000, Math.max(900, screenPx * 0.55)));
+  if (s >= target * 0.85) return img;
+  let c = document.createElement('canvas');
+  c.width = c.height = s;
+  c.getContext('2d').drawImage(img, (iw - s) / 2, (ih - s) / 2, s, s, 0, 0, s, s);
+  while (c.width < target) {
+    const n = Math.min(target, c.width * 2);
+    const d = document.createElement('canvas');
+    d.width = d.height = n;
+    const x = d.getContext('2d');
+    x.imageSmoothingEnabled = true;
+    x.imageSmoothingQuality = 'high';
+    x.drawImage(c, 0, 0, n, n);
+    c = d;
+  }
+  const n = c.width;
+  const x = c.getContext('2d', { willReadFrequently: true });
+  const b = document.createElement('canvas');
+  b.width = b.height = n;
+  const bx = b.getContext('2d', { willReadFrequently: true });
+  bx.filter = `blur(${Math.max(1, (n / s) * 0.6).toFixed(2)}px)`;
+  bx.drawImage(c, 0, 0);
+  const o = x.getImageData(0, 0, n, n), bl = bx.getImageData(0, 0, n, n);
+  const od = o.data, bd = bl.data, k = 0.6;
+  for (let i = 0; i < od.length; i += 4) {
+    od[i] = od[i] + k * (od[i] - bd[i]);
+    od[i + 1] = od[i + 1] + k * (od[i + 1] - bd[i + 1]);
+    od[i + 2] = od[i + 2] + k * (od[i + 2] - bd[i + 2]);
+  }
+  x.putImageData(o, 0, 0);
+  return c;
+}
+
 function setArt(src, animate) {
   const img = new Image();
   img.decoding = 'async';
   img.onload = () => {
-    S.img = img;
+    S.img = enhanced(img);
     applyPalette(img);
     zoomImgs.forEach((i) => { i.src = src; });
     $('#bg-words .wash').src = src;
     $('.vinyl img').src = src;
     $('#thumb').src = src;
-    if (window.FlowBG) FlowBG.setImage(img);
+    if (window.FlowBG) FlowBG.setImage(S.img);
     if (!animate) { artCanvas._tok = (artCanvas._tok || 0) + 1; heroCanvas._tok = (heroCanvas._tok || 0) + 1; }
     sizeCanvases();
     if (animate) {
-      pixelReveal(artCanvas, img);
-      pixelReveal(heroCanvas, img);
+      pixelReveal(artCanvas, S.img);
+      pixelReveal(heroCanvas, S.img);
       S.pixStart = performance.now();
       S.glitch = 1;
     }

@@ -559,11 +559,7 @@ function setEdge(on) {
   document.body.style.cursor = on ? 'ew-resize' : '';
 }
 document.addEventListener('pointermove', (e) => {
-  if (S.drag) {
-    S.drag.x = e.screenX;
-    if (!S.drag.raf) S.drag.raf = requestAnimationFrame(dragStep);
-    return;
-  }
+  if (S.drag) return;
   setEdge(edgeZone(e.clientX));
   if (!S.edge && S.wantHover && !S.hover && !S.expandPending) scheduleExpand(40);
 });
@@ -574,23 +570,26 @@ document.addEventListener('pointerdown', (e) => {
   clearTimeout(S.hoverT);
   S.expandPending = false;
   const from = S.settings.notchOffset || 0;
-  S.drag = { startX: e.screenX, x: e.screenX, from, raf: 0, moved: false };
+  // the drag itself is tracked natively (real screen pixels, any DPI) until
+  // the mouse button is released; we only show feedback from its events
+  S.drag = { from, moved: false };
   S.wasSnapped = from === 0;
   island.setPointerCapture(e.pointerId);
   island.classList.add('dragging');
   document.body.style.cursor = 'grabbing';
+  invoke('drag_notch_start');
 }, true);
-async function dragStep() {
-  const d = S.drag;
-  if (!d) return;
-  d.raf = 0;
-  if (Math.abs(d.x - d.startX) > 3) d.moved = true;
-  const want = d.from + (d.x - d.startX);
-  const applied = await invoke('move_notch', { offset: want, done: false });
+listen('notch:drag', (e) => {
+  const { applied, want, done } = e.payload;
+  if (done) { finishDrag(applied); return; }
+  if (!S.drag) return;
+  if (Math.abs(want - S.drag.from) > 3) S.drag.moved = true;
   magnetFeedback(applied === 0, want, applied);
-}
+});
+listen('display', (e) => { S.zoom = e.payload || 1; S.hit = ''; render(); });
 function magnetFeedback(snapped, want, applied) {
-  centerGuide.style.left = `calc(50% - ${applied}px)`;   // the real screen centre
+  // the real screen centre (offsets are screen px, the page may be zoomed)
+  centerGuide.style.left = `calc(50% - ${applied / (S.zoom || 1)}px)`;
   if (snapped && !S.wasSnapped) {          // little squash when the magnet grabs it
     island.classList.remove('magnet');
     void island.offsetWidth;
@@ -600,20 +599,15 @@ function magnetFeedback(snapped, want, applied) {
   centerGuide.classList.toggle('show', !!S.drag && Math.abs(want) < 150);
   centerGuide.classList.toggle('locked', snapped);
 }
-async function endDrag(e) {
+function finishDrag(applied) {
   const d = S.drag;
-  if (!d) return;
   S.drag = null;
-  const want = d.from + ((e.screenX ?? d.x) - d.startX);
+  S.settings.notchOffset = applied;
   island.classList.remove('dragging');
   centerGuide.classList.remove('show', 'locked');
   document.body.style.cursor = S.edge ? 'ew-resize' : '';
-  if (d.moved) { S.justDragged = true; setTimeout(() => { S.justDragged = false; }, 120); }
-  const applied = await invoke('move_notch', { offset: want, done: true });
-  S.settings.notchOffset = applied;
+  if (d && d.moved) { S.justDragged = true; setTimeout(() => { S.justDragged = false; }, 150); }
 }
-document.addEventListener('pointerup', endDrag);
-document.addEventListener('pointercancel', endDrag);
 
 function scheduleExpand(delay) {
   clearTimeout(S.hoverT);

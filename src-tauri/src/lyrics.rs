@@ -259,9 +259,17 @@ pub(crate) fn build_candidates(title: &str, artist: &str) -> Vec<(String, String
     if artist_c != first_artist(&artist_c) {
         push(title_c.clone(), artist_c.clone());
     }
+    // "School Fight (Lost Tapes 2020)" → "School Fight": drop any remaining extras
+    let bare = ANY_BRACKETS.replace_all(&title_c, "").trim().to_string();
+    if !bare.is_empty() && bare != title_c {
+        push(bare, first_artist(&artist_c));
+    }
     push(title_c, String::new());
     out
 }
+
+static ANY_BRACKETS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\s*[\(\[\{【「][^\)\]\}】」]*[\)\]\}】」]").unwrap());
 
 fn parse_lrc(s: &str) -> Vec<LyricLine> {
     let mut lines = Vec::new();
