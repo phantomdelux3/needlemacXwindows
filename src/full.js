@@ -28,6 +28,7 @@ function demoBridge(q) {
     handlers['media:state']?.({ payload: { active: true, playing: true, positionMs: t0, durationMs: 200000, hasTimeline: true, canNext: true, canPrev: true, canSeek: true } });
     handlers['full:open']?.({});
     if (q.get('style')) setStyle(q.get('style'));
+    if (q.get('glitter')) applySettings({ glitter: q.get('glitter') });
     if (q.get('mode') === 'lyrics') setTimeout(() => setMode('lyrics'), 1300);
   }, 100);
   return {
@@ -142,6 +143,24 @@ function hsl2rgb(h, s, l) {
 }
 const rgbStr = (c) => c.map((v) => Math.round(v)).join(', ');
 
+// up to 6 distinct, glowing colours of the cover (for album-coloured glitter)
+function albumColours(d) {
+  const bins = Array.from({ length: 12 }, () => ({ r: 0, g: 0, b: 0, w: 0 }));
+  for (let i = 0; i < d.length; i += 4) {
+    const [h, s, l] = rgb2hsl(d[i], d[i + 1], d[i + 2]);
+    if (s < 0.18 || l < 0.12 || l > 0.95) continue;
+    const bn = bins[Math.floor(h * 12) % 12];
+    const w = s * (1 - Math.abs(l - 0.55));
+    bn.r += d[i] * w; bn.g += d[i + 1] * w; bn.b += d[i + 2] * w; bn.w += w;
+  }
+  const out = bins.filter((b) => b.w > 0.6).sort((a, b) => b.w - a.w).slice(0, 6).map((b) => {
+    const [h, s] = rgb2hsl(b.r / b.w, b.g / b.w, b.b / b.w);
+    return hsl2rgb(h, Math.max(0.6, s), 0.68);
+  });
+  out.push([255, 255, 255]);                       // a little white sparkle always helps
+  return out;
+}
+
 function applyPalette(img) {
   const N = 36;
   const c = document.createElement('canvas');
@@ -172,6 +191,7 @@ function applyPalette(img) {
   const root = document.documentElement.style;
   root.setProperty('--light', rgbStr(light));
   S.lightRGB = light;
+  if (window.Glitter) Glitter.setPalette(albumColours(d));
   root.setProperty('--dark', rgbStr(dark));
   root.setProperty('--accent', rgbStr(accent));
 }
@@ -749,6 +769,7 @@ function open(opts) {
   S.open = true;
   if (window.FlowBG) FlowBG.resize();
   if (window.EdgeLight) EdgeLight.resize();
+  if (window.Glitter) Glitter.resize();
   enter(auto);
   requestAnimationFrame(sizeGlass);
   // opened by the idle timer: drift into the lyrics on its own, like a screensaver
@@ -862,6 +883,7 @@ function frame(t) {
 
   // screen-edge light: travelling sections of a hot white line (see edge.js)
   const lyr = S.mode === 'lyrics';
+  if (window.Glitter) Glitter.draw(t, smooth, playing);
   if (window.EdgeLight && S.settings.glow) EdgeLight.draw(t, smooth, playing, S.lightRGB || [236, 226, 232], lyr ? 1 : 0.7);
 
   // GPU background (keeps drawing a moment after leaving so the fade is smooth)
@@ -929,6 +951,7 @@ if (window.FlowBG) stage.classList.add('gl');
 
 function applySettings(s) {
   S.settings = { ...S.settings, ...s };
+  if (window.Glitter) Glitter.setMode(S.settings.glitter || 'off');
   document.body.classList.toggle('no-glow', !S.settings.glow);
 }
 invoke('get_settings').then(applySettings).catch(() => {});
@@ -938,6 +961,7 @@ window.addEventListener('resize', () => {
   sizeGlass();
   if (window.FlowBG) FlowBG.resize();
   if (window.EdgeLight) EdgeLight.resize();
+  if (window.Glitter) Glitter.resize();
   sizeCanvases();
   Stars.reset();
   Words.reset();

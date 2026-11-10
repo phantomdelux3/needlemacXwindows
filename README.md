@@ -24,6 +24,9 @@ SoundCloud, YouTube…) in Chrome, Edge, Brave, Firefox and Opera.
 - **Hide notch**: eye button in the open notch, or tray → *Hide notch* (untick to bring it back)
 - **Move the notch**: point at its left/right edge, grab the grip and drag; it snaps to the centre like a magnet. Tray → *Re-center notch* resets it
 - Click-through everywhere except the island; never steals focus
+- **Edge light**: a thin line around the whole screen that pulses with the music, with brighter sections circling the edge and comets on strong beats (tray → *Beat glow*)
+- **Glitter** in full screen (off by default): tray → *Glitter (full screen)* → White / Multicolour / Album colours. Twinkles with the music, sits under the glass card and lyrics
+- **Any screen / scale**: the notch fits small and high-DPI screens, follows display changes, and tray → *Show notch on* picks the monitor
 - Tray menu: shape, live lyrics, hide when idle, beat glow, launch at startup
 
 ## Run / build

@@ -23,6 +23,13 @@ use media::MediaCmd;
 
 /// Auto full-screen choices offered in the tray (minutes, 0 = off).
 const IDLE_CHOICES: [u32; 6] = [0, 1, 3, 5, 10, 15];
+/// Glitter colour choices offered in the tray.
+const GLITTER_CHOICES: [(&str, &str); 4] = [
+    ("off", "Off"),
+    ("white", "White"),
+    ("multi", "Multicolour"),
+    ("album", "Album colours"),
+];
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase", default)]
@@ -39,6 +46,8 @@ pub struct Settings {
     pub notch_offset: f64,
     /// Monitor (system name) the notch lives on; empty = main display.
     pub monitor: String,
+    /// Glitter in the full-screen view: "off" | "white" | "multi" | "album".
+    pub glitter: String,
 }
 
 impl Default for Settings {
@@ -52,6 +61,7 @@ impl Default for Settings {
             notch_hidden: false,
             notch_offset: 0.0,
             monitor: String::new(),
+            glitter: "off".into(),
         }
     }
 }
@@ -271,6 +281,15 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     }
     let disp_menu = disp_menu.build()?;
 
+    // glitter in the full-screen view
+    let mut glit_menu = SubmenuBuilder::new(app, "Glitter (full screen)");
+    for (id, label) in GLITTER_CHOICES {
+        let it = check(&format!("glitter_{id}"), label, s.glitter == id)?;
+        glit_menu = glit_menu.item(&it);
+        items.push(it);
+    }
+    let glit_menu = glit_menu.build()?;
+
     let open_full_item = MenuItemBuilder::with_id("open_full", "Open full screen").build(app)?;
     let recenter = MenuItemBuilder::with_id("recenter", "Re-center notch").build(app)?;
     let quit = MenuItemBuilder::with_id("quit", "Quit NeedleX").build(app)?;
@@ -280,6 +299,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         .item(&disp_menu)
         .separator()
         .item(&idle_menu)
+        .item(&glit_menu)
         .separator()
         .items(&[&floating, &live, &hide, &glow])
         .separator()
@@ -353,6 +373,16 @@ fn on_menu(app: &AppHandle, id: &str) {
             for c in IDLE_CHOICES {
                 if let Some(i) = items.get(&format!("idle_{c}")) {
                     let _ = i.set_checked(c == m);
+                }
+            }
+        }
+        other if other.starts_with("glitter_") => {
+            let g = other["glitter_".len()..].to_string();
+            update_setting(app, |s| s.glitter = g.clone());
+            let items = state.tray_items.lock().unwrap();
+            for (id, _) in GLITTER_CHOICES {
+                if let Some(i) = items.get(&format!("glitter_{id}")) {
+                    let _ = i.set_checked(id == g);
                 }
             }
         }
